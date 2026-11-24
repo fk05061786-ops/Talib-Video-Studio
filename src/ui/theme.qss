@@ -1,0 +1,211 @@
+/* Talib Video Studio - Premiere Pro-inspired Dark Theme */
+
+/* Base colors */
+:root {
+    --bg-dark: #0a0a0a;
+    --bg-mid: #1a1a1a;
+    --bg-light: #252525;
+    --border-dark: #333333;
+    --border-mid: #444444;
+    --accent-blue: #4a90e2;
+    --accent-red: #e74c3c;
+    --accent-green: #2ecc71;
+    --text-primary: #e0e0e0;
+    --text-secondary: #a0a0a0;
+    --text-muted: #666666;
+    --panel-header-bg: #2d2d2d;
+    --panel-header-fg: #ffffff;
+    --timecode-bg: #1e1e1e;
+    --timecode-fg: #00ff00;
+    --scrollbar-track: #333333;
+    --scrollbar-thumb: #555555;
+}
+
+/* Global styles */
+QMainWindow {
+    background-color: var(--bg-dark);
+    border: none;
+}
+
+QWidget {
+    background-color: var(--bg-mid);
+    color: var(--text-primary);
+    font-family: "Segoe UI", "Roboto", "Helvetica", sans-serif;
+}
+
+/* Panel headers */
+QFrame[objectName="panel-header"] {
+    background-color: var(--panel-header-bg);
+    border-bottom: 1px solid var(--border-dark);
+    padding: 8px 12px;
+}
+
+QLabel[objectName="panel-title"] {
+    font-weight: bold;
+    font-size: 14px;
+    color: var(--panel-header-fg);
+    margin: 0;
+    padding: 0;
+}
+
+/* Splitter styles */
+QSplitter::handle {
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-dark);
+}
+
+QSplitter::handle:hover {
+    background-color: var(--accent-blue);
+    border-color: var(--accent-blue);
+}
+
+/* Button styles */
+QPushButton {
+    background-color: var(--bg-light);
+    border: 1px solid var(--border-mid);
+    color: var(--text-primary);
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+QPushButton:hover {
+    background-color: var(--accent-blue);
+    border-color: var(--accent-blue);
+    color: #ffffff;
+}
+
+QPushButton:pressed {
+    background-color: #357abd;
+    border-color: #357abd;
+}
+
+QPushButton[objectName="primary-action"] {
+    background-color: var(--accent-blue);
+    border-color: var(--accent-blue);
+}
+
+QPushButton[objectName="primary-action"]:hover {
+    background-color: #5d9cec;
+    border-color: #5d9cec;
+}
+
+/* Input styles */
+QLineEdit, QComboBox, QSpinBox {
+    background-color: var(--bg-light);
+    border: 1px solid var(--border-mid);
+    color: var(--text-primary);
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus {
+    border-color: var(--accent-blue);
+    outline: none;
+}
+
+/* Slider styles */
+QSlider::groove:horizontal {
+    height: 6px;
+    background-color: var(--bg-light);
+    border: 1px solid var(--border-mid);
+    margin: 8px 0;
+}
+
+QSlider::handle:horizontal {
+    width: 16px;
+    height: 16px;
+    background-color: var(--accent-blue);
+    border: 2px solid var(--bg-mid);
+    margin: -6px 0;
+    border-radius: 50%;
+}
+
+QSlider::handle:horizontal:hover {
+    background-color: #5d9cec;
+}
+
+/* Scroll area */
+QScrollArea QWidget {
+    background-color: transparent;
+}
+
+QScrollBar:vertical {
+    width: 12px;
+    background-color: var(--scrollbar-track);
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    width: 12px;
+    background-color: var(--scrollbar-thumb);
+    border-radius: 6px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: var(--accent-blue);
+}
+
+/* Timecode display */
+QLabel[objectName="timecode-display"] {
+    background-color: var(--timecode-bg);
+    border: 1px solid var(--border-dark);
+    color: var(--timecode-fg);
+    font-family: "Courier New", "Courier", monospace;
+    font-size: 14px;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+/* Status bar */
+QStatusBar {
+    background-color: var(--bg-dark);
+    border-top: 1px solid var(--border-dark);
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+/* Empty state panels */
+QFrame[objectName="empty-panel"] {
+    background-color: var(--bg-light);
+    border: 2px dashed var(--border-mid);
+    border-radius: 4px;
+}
+
+QLabel[objectName="empty-text"] {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* Panel layout helpers */
+QWidget[objectName="panel-container"] {
+    background-color: var(--bg-mid);
+    border: 1px solid var(--border-dark);
+    border-radius: 4px;
+}
+
+/* Tab widget for Source/Program split */
+QTabWidget::pane {
+    border: 1px solid var(--border-dark);
+    background-color: var(--bg-dark);
+}
+
+QTabBar::tab {
+    background-color: var(--bg-light);
+    border: 1px solid var(--border-mid);
+    color: var(--text-primary);
+    padding: 8px 16px;
+    margin-right: 2px;
+}
+
+QTabBar::tab:selected {
+    background-color: var(--panel-header-bg);
+    border-bottom-color: var(--accent-blue);
+    color: var(--accent-blue);
+}
+
+QTabBar::tab:!selected:hover {
+    background-color: var(--bg-light);
+    border-color: var(--border-dark);
+}
