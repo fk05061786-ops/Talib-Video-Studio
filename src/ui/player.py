@@ -19,7 +19,7 @@ from PySide6.QtCore import (
     QPointF,
     QEvent,
 )
-from PySide6.QtMultimedia import QMediaPlayer
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QWidget,
@@ -152,7 +152,10 @@ class VideoPlayerWidget(QWidget):
         """Connect media player signals to UI."""
         self._media_player.positionChanged.connect(self._update_time_labels)
         self._media_player.durationChanged.connect(self._update_slider_range)
-        self._media_player.stateChanged.connect(self._handle_state_changed)
+        if hasattr(self._media_player, "playbackStateChanged"):
+            self._media_player.playbackStateChanged.connect(self._handle_state_changed)
+        elif hasattr(self._media_player, "stateChanged"):
+            self._media_player.stateChanged.connect(self._handle_state_changed)
         self._timeline_slider.valueChanged.connect(self._seek)
 
     # ------------------------------------------------------------------
@@ -173,25 +176,29 @@ class VideoPlayerWidget(QWidget):
         self._is_playing = True
         self._update_time_labels()
 
-    def set_trim_in(self, position: int) -> None:
+    def set_trim_in(self, position: Optional[int] = None) -> None:
         """Set the trim in position.
 
         Parameters
         ----------
-        position: int
-            Position in milliseconds.
+        position: int | None, optional
+            Position in milliseconds. If None or boolean from signal, uses current player position.
         """
+        if position is None or isinstance(position, bool):
+            position = self._media_player.position()
         self._trim_in = position
         self._update_trim_status()
 
-    def set_trim_out(self, position: int) -> None:
+    def set_trim_out(self, position: Optional[int] = None) -> None:
         """Set the trim out position.
 
         Parameters
         ----------
-        position: int
-            Position in milliseconds.
+        position: int | None, optional
+            Position in milliseconds. If None or boolean from signal, uses current player position.
         """
+        if position is None or isinstance(position, bool):
+            position = self._media_player.position()
         self._trim_out = position
         self._update_trim_status()
 
@@ -211,7 +218,12 @@ class VideoPlayerWidget(QWidget):
 
     def _toggle_play(self) -> None:
         """Toggle playback."""
-        if self._media_player.state() == QMediaPlayer.PlayingState:
+        current_state = (
+            self._media_player.playbackState()
+            if hasattr(self._media_player, "playbackState")
+            else self._media_player.state()
+        )
+        if current_state == QMediaPlayer.PlayingState:
             self._media_player.pause()
         else:
             self._media_player.play()

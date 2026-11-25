@@ -11,6 +11,7 @@ from typing import Optional
 
 from PySide6.QtWidgets import (
     QDialog,
+    QWidget,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
@@ -25,6 +26,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QRegularExpression
 from PySide6.QtGui import QRegularExpressionValidator
+
+from src.core.render_presets import preset_choices, preset_to_export_settings
 
 
 SUPPORTED_EXTENSIONS = frozenset({".mp4", ".mov", ".mkv", ".avi", ".webm"})
@@ -99,8 +102,8 @@ class ImportMediaDialog(QDialog):
         path_text = self._path_edit.text().strip()
         if not path_text:
             return None
-        p = Path(path_text)
-        if p.is_absolute() and p.exists() and p.is_file() and _is_supported_path(p):
+        p = Path(path_text).resolve()
+        if p.exists() and p.is_file() and _is_supported_path(p):
             return p
         return None
 
@@ -168,6 +171,7 @@ class ExportSettingsDialog(QDialog):
 
         # Input path read-only display
         self._input_path = input_path
+        self._trim_range_ms = trim_range_ms
         path_label = QLabel(f"Input: {input_path.name}")
         path_label.setWordWrap(True)
         layout.addWidget(path_label)
@@ -184,6 +188,18 @@ class ExportSettingsDialog(QDialog):
         out_layout.addWidget(self._output_edit, 1)
         out_layout.addWidget(out_btn)
         layout.addLayout(out_layout)
+
+        # Render preset
+        self._preset_labels = preset_choices()
+        self._render_preset_combo = QComboBox()
+        self._render_preset_combo.addItems(list(self._preset_labels))
+        self._render_preset_combo.currentTextChanged.connect(
+            self._apply_render_preset
+        )
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(QLabel("Render preset:"))
+        preset_row.addWidget(self._render_preset_combo, 1)
+        layout.addLayout(preset_row)
 
         # Resolution
         res_layout = QHBoxLayout()
@@ -245,16 +261,34 @@ class ExportSettingsDialog(QDialog):
         # Ensure .mp4 extension
         if out_path.suffix.lower() != ".mp4":
             out_path = out_path.with_suffix(".mp4")
-        return {
+        settings = {
             "output_path": out_path,
             "resolution": self._resolution_combo.currentText(),
             "fps": self._fps_spin.value(),
-            "trim_range_ms": None,  # caller may override if needed
+            "trim_range_ms": self._trim_range_ms,
         }
+        preset = preset_to_export_settings(
+            self._preset_labels.get(self._render_preset_combo.currentText())
+        )
+        settings["preset"] = preset["preset"] if preset else "custom"
+        if preset:
+            for key in ("video_bitrate", "audio_bitrate", "codec", "audio_codec"):
+                settings[key] = preset[key]
+        return settings
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _apply_render_preset(self, label: str) -> None:
+        settings = preset_to_export_settings(self._preset_labels.get(label))
+        if settings is None:
+            return
+        resolution = settings["resolution"]
+        if self._resolution_combo.findText(resolution) < 0:
+            self._resolution_combo.addItem(resolution)
+        self._resolution_combo.setCurrentText(resolution)
+        self._fps_spin.setValue(settings["fps"])
 
     def _browse_output(self) -> None:
         """Open a save dialog for the output path."""

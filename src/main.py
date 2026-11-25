@@ -1,30 +1,33 @@
 """Tal Video Studio — main entry point.
 
-Loads environment variables from ``.env.hub`` (project root) and displays
-the :class:`MainWindow` with the loaded configuration.  Handles cleanup
-on shutdown and top-level errors gracefully.
+Loads ``.env.hub`` (repo root or PyInstaller bundle), resolves FFmpeg
+binaries, applies the bundled stylesheet, and displays :class:`MainWindow`.
+Top-level errors are logged to a file next to the working directory.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import traceback
-from typing import Optional
+from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QObject, Signal
 
-# ------------------------------------------------------------------
-# Load .env.hub  (key=value, ignore blanks and # comments, strip quotes)
-# ------------------------------------------------------------------
+# Ensure the project root is importable when launched as ``python src/main.py``.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
-ENV_HUB_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "..",
-    "..",
-    ".env.hub",
-)
+from src.ui.main_window import MainWindow
+from src.app.startup import init_effect_registry
+from src.utils.packaging import bundle_dir, resolve_binary
+
+logger = logging.getLogger(__name__)
+ENV_HUB_PATH = os.path.join(_PROJECT_ROOT, ".env.hub")
+ERROR_LOG_NAME = "talib_video_studio_error.log"
 
 
 def _strip_quotes(value: str) -> str:
@@ -39,11 +42,8 @@ def _strip_quotes(value: str) -> str:
 def _load_env_hub(path: str) -> dict[str, str]:
     """Read ``.env.hub`` and return a ``dict`` of key/value pairs.
 
-    Blank lines and lines starting with ``#`` are ignored.  The
-    ``KEY="value"`` format is supported — surrounding quotes on the
-    value are stripped.  The function does *not* overwrite existing
-    environment variables — it only returns the parsed mapping so the
-    caller can decide what to ``setdefault``.
+    Blank lines and ``#`` comments are ignored; surrounding quotes on values
+    are stripped. Existing environment variables are never overwritten.
     """
     mapping: dict[str, str] = {}
     if not os.path.isfile(path):
@@ -51,9 +51,7 @@ def _load_env_hub(path: str) -> dict[str, str]:
     with open(path, "r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
+            if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, value = line.partition("=")
             key = key.strip()
@@ -63,55 +61,80 @@ def _load_env_hub(path: str) -> dict[str, str]:
     return mapping
 
 
-class ExitCleaner(QObject):
-    """Cleanup signals for graceful exit.
+def _find_env_hub() -> str:
+    """Prefer the repo file, then the one bundled by PyInstaller."""
+    candidates = (Path(ENV_HUB_PATH), bundle_dir() / ".env.hub")
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return ENV_HUB_PATH
 
-    Emits:
-      - ``cleanup_finished()`` when all cleanup is done.
-    """
+
+def _write_error_log() -> str:
+    """Append the current traceback to a log file and return its path."""
+    path = Path.cwd() / ERROR_LOG_NAME
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(traceback.format_exc())
+            handle.write("\n" + "=" * 60 + "\n")
+    except OSError:
+        return "<unwritable>"
+    return str(path)
+
+
+class ExitCleaner(QObject):
+    """Cleanup signals for graceful exit."""
+
     cleanup_finished = Signal()
 
 
 def main() -> None:
-    """Application entry point.
-
-    - Loads ``.env.hub`` variables (without overwriting process env).
-    - Initialises the Qt application.
-    - Shows the ``MainWindow`` with a config dict derived from the hub.
-    - Handles cleanup on shutdown and top-level errors gracefully.
-    """
-    # Load environment variables
-    env_vars = _load_env_hub(ENV_HUB_PATH)
-    # Apply defaults only if not already set in the process environment
+    """Application entry point."""
+    env_vars = _load_env_hub(_find_env_hub())
     for key, value in env_vars.items():
         os.environ.setdefault(key, value)
 
-    # Build a config dict the MainWindow expects
-    config = {k: v for k, v in env_vars.items()}
+    config = dict(env_vars)
+    config.setdefault("APP_NAME", "Talib Video Studio")
+    for kind in ("ffmpeg", "ffprobe"):
+        resolved = resolve_binary(kind, config)
+        if resolved:
+            key = f"{kind.upper()}_PATH"
+            config[key] = resolved
+            os.environ.setdefault(key, resolved)
 
-    # Initialize Qt application
+    try:
+        registry = init_effect_registry(config, extra_dir=bundle_dir() / "effects")
+    except Exception:
+        logger.exception("Effect registry initialization failed; starting empty")
+        registry = None
+
     app = QApplication(sys.argv)
-    window = MainWindow(config=config)
-    window.setWindowTitle(config.get("APP_NAME", "Talib Video Studio"))
+    theme_path = bundle_dir() / "src" / "ui" / "theme.qss"
+    if theme_path.is_file():
+        app.setStyleSheet(theme_path.read_text(encoding="utf-8"))
 
-    # Add cleanup signals
+    window = MainWindow(config=config, registry=registry)
+    window.setWindowTitle(config["APP_NAME"])
+
     cleaner = ExitCleaner()
     cleaner.cleanup_finished.connect(app.quit)
     window.cleanup_finished.connect(cleaner.cleanup_finished.emit)
 
-    # Show the window
     window.show()
 
-    # Handle top-level errors
-    def handle_top_level_error(exc_type, exc_value, exc_traceback):
-        """Log and exit on top-level errors."""
-        print(f"\n=== ERROR ===\nException type: {exc_type.__name__}\nValue: {exc_value}\nTraceback:\n{traceback.format_exc()}\n=====\nExiting gracefully...")
+    def handle_top_level_error(exc_type, exc_value, exc_traceback) -> None:
+        """Log a fatal error, then shut down cleanly."""
+        log_path = _write_error_log()
+        print(
+            f"\n=== ERROR ===\n{exc_type.__name__}: {exc_value}\n"
+            f"Details written to: {log_path}\n=====\n"
+        )
         cleaner.cleanup_finished.emit()
         app.exit(1)
 
     sys.excepthook = handle_top_level_error
 
-    # Run the application
     try:
         app.exec()
     except Exception as exc:  # pragma: no cover

@@ -13,6 +13,21 @@ from typing import List, Tuple, Optional, Any, Dict
 
 from PySide6.QtCore import QThread, Signal
 
+from src.core.text_styles import TextStyle, build_drawtext, style_from_dict
+from src.core.transitions import xfade_offsets
+from src.core.grading import build_grade_filter, merge_grade, normalize_grade
+from src.core.chroma import build_chroma_filter
+from src.core.audio_mixer import (
+    build_audio_filter,
+    build_loudness_filter,
+    normalize_audio_settings,
+)
+from src.core.export_helpers import write_sidecars
+from src.core.export_validation import validate_export_request
+from src.utils.packaging import resolve_binary
+
+_XFADE_KINDS = {"crossfade": "fade", "dissolve": "dissolve"}
+
 
 class FFmpegExporter:
     """Utility class that builds and runs an FFmpeg command.
@@ -25,7 +40,10 @@ class FFmpegExporter:
     """
 
     def __init__(self, ffmpeg_bin: str = "ffmpeg") -> None:
-        self.ffmpeg_bin = ffmpeg_bin
+        if str(ffmpeg_bin) in ("ffmpeg", "ffmpeg.exe"):
+            self.ffmpeg_bin = resolve_binary("ffmpeg") or str(ffmpeg_bin)
+        else:
+            self.ffmpeg_bin = str(ffmpeg_bin)
 
     # ------------------------------------------------------------------
     # Command builder
@@ -48,6 +66,11 @@ class FFmpegExporter:
         opacity: float = 1.0,
         scale: float = 1.0,
         text_overlay: Optional[str] = None,
+        text_style: Optional[Any] = None,
+        grade: Optional[Any] = None,
+        chroma: Optional[Any] = None,
+        audio_mix: Optional[Any] = None,
+        loudnorm: bool = False,
     ) -> List[str]:
         """Construct the FFmpeg CLI argument list."""
         try:
@@ -64,12 +87,46 @@ class FFmpegExporter:
             v_filters.append(f"setpts={1/speed}*PTS")
             a_filters.append(f"atempo={speed}")
 
-        if volume != 1.0:
+        if audio_mix is not None:
+            mix_filter = build_audio_filter(
+                normalize_audio_settings(audio_mix),
+                int(duration_sec * 1000) if duration_sec else None,
+            )
+            if mix_filter:
+                a_filters.append(mix_filter)
+        elif volume != 1.0:
             a_filters.append(f"volume={volume}")
+        if loudnorm:
+            a_filters.append(build_loudness_filter())
 
-        # Color/Effects
-        if brightness != 0.0 or contrast != 1.0 or saturation != 1.0:
-            v_filters.append(f"eq=brightness={brightness}:contrast={contrast}:saturation={saturation}")
+        # Chroma key and color grading (legacy brightness/contrast/saturation
+        # remain supported and override the matching grading fields).
+        chroma_filter = build_chroma_filter(chroma)
+        if chroma_filter:
+            v_filters.append(chroma_filter)
+
+        if grade is not None:
+            grade_settings = normalize_grade(grade)
+            if brightness != 0.0 or contrast != 1.0 or saturation != 1.0:
+                grade_settings = merge_grade(
+                    grade_settings,
+                    {
+                        "brightness": brightness,
+                        "contrast": contrast,
+                        "saturation": saturation,
+                    },
+                )
+        else:
+            grade_settings = normalize_grade(
+                {
+                    "brightness": brightness,
+                    "contrast": contrast,
+                    "saturation": saturation,
+                }
+            )
+        grade_filter = build_grade_filter(grade_settings)
+        if grade_filter:
+            v_filters.append(grade_filter)
 
         if opacity < 1.0:
             v_filters.append(f"format=rgba,colorchannelmixer=aa={opacity}")
@@ -82,7 +139,15 @@ class FFmpegExporter:
         if fade_out > 0 and duration_sec:
             v_filters.append(f"fade=out:{int(duration_sec*fps - fade_out*fps)}:{int(fade_out*fps)}")
 
-        if text_overlay:
+        if text_style is not None:
+            style = (
+                style_from_dict(text_style)
+                if isinstance(text_style, dict)
+                else text_style
+            )
+            if isinstance(style, TextStyle) and style.text:
+                v_filters.append(build_drawtext(style))
+        elif text_overlay:
             v_filters.append(f"drawtext=text='{text_overlay}':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=(h-text_h)/2")
 
         # Final Scale/Pad to target resolution
@@ -118,8 +183,9 @@ class FFmpegExporter:
         resolution: str = "1920x1080",
         fps: int = 30,
         muted_tracks: Optional[List[int]] = None,
+        transitions: Optional[List[Dict[str, Any]]] = None,
     ) -> List[str]:
-        """Build command to concatenate multiple clips with filters, skipping muted tracks."""
+        """Build a concat (or crossfade) command, skipping muted tracks."""
         # Filter clips by muted tracks
         active_clips = [
             c for c in clips
@@ -138,15 +204,56 @@ class FFmpegExporter:
             if clip.get("duration_sec") is not None:
                 cmd.extend(["-t", f"{clip['duration_sec']:.3f}"])
 
-        # Filter complex for concatenation
+        # Filter complex for concatenation, with optional crossfades
+        scale_spec = resolution.replace("x", ":")
         filter_parts = []
         for i, _ in enumerate(active_clips):
-            filter_parts.append(f"[{i}:v]scale={resolution.replace('x', ':')}:force_original_aspect_ratio=decrease,pad={resolution.replace('x', ':')}:(ow-iw)/2:(oh-ih)/2[v{i}];")
+            filter_parts.append(
+                f"[{i}:v]scale={scale_spec}:force_original_aspect_ratio=decrease,"
+                f"pad={scale_spec}:(ow-iw)/2:(oh-ih)/2[v{i}];"
+            )
 
-        concat_v = "".join(f"[v{i}]" for i in range(len(active_clips)))
-        concat_a = "".join(f"[{i}:a]" for i in range(len(active_clips)))
-        filter_parts.append(f"{concat_v}concat=n={len(active_clips)}:v=1:a=0[outv];")
-        filter_parts.append(f"{concat_a}concat=n={len(active_clips)}:v=0:a=1[outa]")
+        durations_ms = [
+            int(float(clip.get("duration_sec", 0)) * 1000) for clip in active_clips
+        ]
+        transition_durations = [
+            int(t.get("duration_ms", 0)) for t in (transitions or [])
+        ]
+        offsets = (
+            xfade_offsets(durations_ms, transition_durations)
+            if transitions
+            else []
+        )
+
+        if offsets and len(offsets) == len(active_clips) - 1:
+            last_v = "v0"
+            last_a = "0:a"
+            for index, (transition, offset) in enumerate(
+                zip(transitions, offsets)
+            ):
+                duration = transition_durations[index] / 1000.0
+                kind = _XFADE_KINDS.get(transition.get("kind", "crossfade"), "fade")
+                filter_parts.append(
+                    f"[{last_v}][v{index + 1}]xfade=transition={kind}:"
+                    f"duration={duration:.3f}:offset={offset:.3f}[x{index}];"
+                )
+                filter_parts.append(
+                    f"[{last_a}][{index + 1}:a]acrossfade=d={duration:.3f}:"
+                    f"c1=tri:c2=tri[a{index}];"
+                )
+                last_v = f"x{index}"
+                last_a = f"a{index}"
+            filter_parts.append(f"[{last_v}]null[outv];")
+            filter_parts.append(f"[{last_a}]anull[outa]")
+        else:
+            concat_v = "".join(f"[v{i}]" for i in range(len(active_clips)))
+            concat_a = "".join(f"[{i}:a]" for i in range(len(active_clips)))
+            filter_parts.append(
+                f"{concat_v}concat=n={len(active_clips)}:v=1:a=0[outv];"
+            )
+            filter_parts.append(
+                f"{concat_a}concat=n={len(active_clips)}:v=0:a=1[outa]"
+            )
 
         cmd.extend(["-filter_complex", "".join(filter_parts)])
         cmd.extend([
@@ -169,15 +276,55 @@ class FFmpegExporter:
         fps: int = 30,
         start_sec: Optional[float] = None,
         duration_sec: Optional[float] = None,
+        speed: float = 1.0,
+        volume: float = 1.0,
+        fade_in: float = 0.0,
+        fade_out: float = 0.0,
+        brightness: float = 0.0,
+        contrast: float = 1.0,
+        saturation: float = 1.0,
+        opacity: float = 1.0,
+        scale: float = 1.0,
+        text_overlay: Optional[str] = None,
+        text_style: Optional[Any] = None,
+        grade: Optional[Any] = None,
+        chroma: Optional[Any] = None,
+        audio_mix: Optional[Any] = None,
+        loudnorm: bool = False,
+        subtitle_cues: Optional[Any] = None,
+        chapter_markers: Optional[Any] = None,
     ) -> Tuple[bool, str]:
         """Run FFmpeg to export the video."""
+        error = validate_export_request(input_path, output_path, self.ffmpeg_bin)
+        if error is not None:
+            return False, error
         try:
             output_path.parent.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
             return False, f"Failed to create output directory: {exc}"
 
         cmd = self.build_command(
-            input_path, output_path, resolution, fps, start_sec, duration_sec
+            input_path,
+            output_path,
+            resolution=resolution,
+            fps=fps,
+            start_sec=start_sec,
+            duration_sec=duration_sec,
+            speed=speed,
+            volume=volume,
+            fade_in=fade_in,
+            fade_out=fade_out,
+            brightness=brightness,
+            contrast=contrast,
+            saturation=saturation,
+            opacity=opacity,
+            scale=scale,
+            text_overlay=text_overlay,
+            text_style=text_style,
+            grade=grade,
+            chroma=chroma,
+            audio_mix=audio_mix,
+            loudnorm=loudnorm,
         )
         try:
             result = subprocess.run(
@@ -192,7 +339,16 @@ class FFmpegExporter:
             return False, f"Unexpected error: {exc}"
 
         if result.returncode == 0:
-            return True, "Export completed successfully."
+            try:
+                sidecars = write_sidecars(
+                    output_path, subtitle_cues, chapter_markers
+                )
+            except OSError as exc:
+                return False, f"Export rendered but sidecar write failed: {exc}"
+            message = "Export completed successfully."
+            if sidecars:
+                message += " Sidecars: " + ", ".join(path.name for path in sidecars)
+            return True, message
         else:
             return False, result.stderr.strip() or "FFmpeg reported an error."
 
@@ -211,6 +367,23 @@ class ExportWorkerThread(QThread):
         fps: int = 30,
         start_sec: Optional[float] = None,
         duration_sec: Optional[float] = None,
+        speed: float = 1.0,
+        volume: float = 1.0,
+        fade_in: float = 0.0,
+        fade_out: float = 0.0,
+        brightness: float = 0.0,
+        contrast: float = 1.0,
+        saturation: float = 1.0,
+        opacity: float = 1.0,
+        scale: float = 1.0,
+        text_overlay: Optional[str] = None,
+        text_style: Optional[Any] = None,
+        grade: Optional[Any] = None,
+        chroma: Optional[Any] = None,
+        audio_mix: Optional[Any] = None,
+        loudnorm: bool = False,
+        subtitle_cues: Optional[Any] = None,
+        chapter_markers: Optional[Any] = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -221,14 +394,48 @@ class ExportWorkerThread(QThread):
         self.fps = fps
         self.start_sec = start_sec
         self.duration_sec = duration_sec
+        self.speed = speed
+        self.volume = volume
+        self.fade_in = fade_in
+        self.fade_out = fade_out
+        self.brightness = brightness
+        self.contrast = contrast
+        self.saturation = saturation
+        self.opacity = opacity
+        self.scale = scale
+        self.text_overlay = text_overlay
+        self.text_style = text_style
+        self.grade = grade
+        self.chroma = chroma
+        self.audio_mix = audio_mix
+        self.loudnorm = loudnorm
+        self.subtitle_cues = subtitle_cues
+        self.chapter_markers = chapter_markers
 
     def run(self) -> None:
         success, message = self.exporter.export_video(
             self.input_path,
             self.output_path,
-            self.resolution,
-            self.fps,
-            self.start_sec,
-            self.duration_sec,
+            resolution=self.resolution,
+            fps=self.fps,
+            start_sec=self.start_sec,
+            duration_sec=self.duration_sec,
+            speed=self.speed,
+            volume=self.volume,
+            fade_in=self.fade_in,
+            fade_out=self.fade_out,
+            brightness=self.brightness,
+            contrast=self.contrast,
+            saturation=self.saturation,
+            opacity=self.opacity,
+            scale=self.scale,
+            text_overlay=self.text_overlay,
+            text_style=self.text_style,
+            grade=self.grade,
+            chroma=self.chroma,
+            audio_mix=self.audio_mix,
+            loudnorm=self.loudnorm,
+            subtitle_cues=self.subtitle_cues,
+            chapter_markers=self.chapter_markers,
         )
         self.finished_export.emit(success, message)

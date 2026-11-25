@@ -6,27 +6,36 @@ using FFmpeg/ffprobe.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import json
 from pathlib import Path
 from typing import Optional, Dict, Any
 from PySide6.QtGui import QPixmap, QImage
 
+from src.utils.packaging import resolve_binary
+
 
 def get_media_info(path: str | Path) -> Dict[str, Any]:
     """Inspect media file using ffprobe and return metadata dict."""
-    path_str = str(path)
+    path_obj = Path(path)
+    path_str = str(path_obj)
     info = {
         "duration": 0.0,
         "resolution": "1920x1080",
         "fps": 30.0,
-        "format": Path(path_str).suffix.lstrip(".").lower(),
-        "size": Path(path_str).stat().st_size if Path(path_str).exists() else 0,
+        "format": path_obj.suffix.lstrip(".").lower(),
+        "size": path_obj.stat().st_size if path_obj.exists() else 0,
     }
 
+    if not path_obj.is_file():
+        return info
+    ffprobe_bin = resolve_binary("ffprobe") or os.environ.get(
+        "FFPROBE_PATH", "ffprobe"
+    )
     try:
         cmd = [
-            "ffprobe",
+            ffprobe_bin,
             "-v", "quiet",
             "-print_format", "json",
             "-show_format",
@@ -68,9 +77,12 @@ def get_media_duration(path: str | Path) -> float:
 
 def extract_frame(path: str | Path, time_sec: float, output_path: str | Path) -> bool:
     """Extract a single video frame at *time_sec* to *output_path*."""
+    ffmpeg_bin = resolve_binary("ffmpeg") or os.environ.get(
+        "FFMPEG_PATH", "ffmpeg"
+    )
     try:
         cmd = [
-            "ffmpeg",
+            ffmpeg_bin,
             "-y",
             "-ss", f"{time_sec:.3f}",
             "-i", str(path),

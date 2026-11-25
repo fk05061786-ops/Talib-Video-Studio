@@ -4,4 +4,5 @@ __all__ = [
     "project",
     "session",
     "settings",
+    "startup",
 ]

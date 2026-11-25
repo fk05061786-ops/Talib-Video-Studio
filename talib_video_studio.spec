@@ -1,33 +1,69 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec file for Talib Video Studio (Windows GUI Executable).
+"""PyInstaller spec file for Talib Video Studio (Windows GUI executable).
 
-Builds a standalone windowed Windows executable from src/main.py,
-bundling PySide6, src packages, and providing configuration support.
+Entry point: src/main.py. Bundles PySide6, all ``src`` packages, the Qt
+stylesheet and ``.env.hub``. If optional ``bin/ffmpeg.exe`` /
+``bin/ffprobe.exe`` files exist they are bundled under ``bin/`` and take
+precedence over PATH at runtime.
 """
 
-import sys
 from pathlib import Path
 
 block_cipher = None
 
-# Project root
 ROOT = Path(SPECPATH)
+
+datas = [
+    (str(ROOT / ".env.hub"), "."),
+    (str(ROOT / "src" / "ui" / "theme.qss"), "src/ui"),
+]
+for _binary in ("ffmpeg.exe", "ffprobe.exe", "ffmpeg", "ffprobe"):
+    _path = ROOT / "bin" / _binary
+    if _path.is_file():
+        datas.append((str(_path), "bin"))
+
+hiddenimports = [
+    "PySide6.QtCore",
+    "PySide6.QtGui",
+    "PySide6.QtWidgets",
+    "PySide6.QtMultimedia",
+    "PySide6.QtMultimediaWidgets",
+    "PySide6.QtNetwork",
+    "src",
+    "src.app",
+    "src.app.project",
+    "src.app.session",
+    "src.core",
+    "src.core.audio",
+    "src.core.export",
+    "src.core.export_validation",
+    "src.core.media",
+    "src.core.text_styles",
+    "src.core.timecode",
+    "src.core.timeline",
+    "src.core.timeline_ops",
+    "src.core.transitions",
+    "src.ui",
+    "src.ui.dialogs",
+    "src.ui.main_window",
+    "src.ui.player",
+    "src.ui.panels",
+    "src.ui.panels.base_panel",
+    "src.ui.panels.export_panel",
+    "src.ui.panels.media_bin",
+    "src.ui.panels.monitor",
+    "src.ui.panels.timeline",
+    "src.utils",
+    "src.utils.ffmpeg",
+    "src.utils.packaging",
+]
 
 a = Analysis(
     [str(ROOT / "src" / "main.py")],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=[
-        (str(ROOT / ".env.hub"), "."),
-        (str(ROOT / "src" / "ui" / "theme.qss"), "src/ui"),
-    ],
-    hiddenimports=[
-        "PySide6.QtCore",
-        "PySide6.QtGui",
-        "PySide6.QtWidgets",
-        "PySide6.QtMultimedia",
-        "PySide6.QtMultimediaWidgets",
-    ],
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -50,7 +86,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,  # Windowed GUI mode (no console popup)
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
